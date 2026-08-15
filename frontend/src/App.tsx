@@ -81,6 +81,9 @@ const App: React.FC = () => {
       console.error('Session stop error:', e);
     } finally {
       setIsSessionActive(false);
+      setCurrentScore(100);
+      setLatestEvent(null);
+      setDetails({ reason: 'Сессия остановлена' });
     }
   };
 
@@ -153,6 +156,7 @@ const App: React.FC = () => {
               onResult={handleMLResult}
               onConnectionChange={setIsConnected}
               backendUrl={BACKEND_URL}
+              isActive={isSessionActive}
             />
 
             {latestEvent && (

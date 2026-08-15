@@ -26,20 +26,21 @@ interface FocusCameraProps {
   onResult?: (result: MLResult) => void;
   onConnectionChange?: (connected: boolean) => void;
   backendUrl?: string;
-  distractionGracePeriodSec?: number; // Configurable grace period (default 5 sec)
+  distractionGracePeriodSec?: number;
+  isActive?: boolean; // Controls whether AI scanning is active
 }
 
 /**
- * FocusCamera Engine with 5-Second Grace Period & Multi-Factor Detection:
- * - Immediate visual detection of gaze/head/eyes/mouth/presence.
- * - 5-second grace period timer: score penalties & distraction alerts trigger ONLY
- *   if the user stays in a distracted position continuously for > 5 seconds.
+ * FocusCamera Engine with Session Activation Control & 5-Second Grace Period:
+ * - When isActive === false: Shows webcam preview without ML scanning or backend uploads.
+ * - When isActive === true: Starts 60 FPS MediaPipe AI scanning & 5-second distraction timer.
  */
 const FocusCamera: React.FC<FocusCameraProps> = ({
   onResult,
   onConnectionChange,
   backendUrl = 'http://localhost:5000',
   distractionGracePeriodSec = 5,
+  isActive = false,
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -56,6 +57,22 @@ const FocusCamera: React.FC<FocusCameraProps> = ({
   const [latestResult, setLatestResult] = useState<MLResult | null>(null);
   const [cameraActive, setCameraActive] = useState<boolean>(false);
   const [modelLoaded, setModelLoaded] = useState<boolean>(false);
+
+  // Reset timers when session state changes
+  useEffect(() => {
+    distractionStartTimeRef.current = null;
+    closedEyeFramesRef.current = 0;
+    if (!isActive) {
+      setLatestResult({
+        score: 100,
+        event: null,
+        details: {
+          reason: 'Сессия не запущена. Нажмите «Начать сессию»',
+          mode: 'Режим ожидания',
+        },
+      });
+    }
+  }, [isActive]);
 
   // ── 1. Connect Socket.io ─────────────────────────────────
   useEffect(() => {
@@ -75,14 +92,16 @@ const FocusCamera: React.FC<FocusCameraProps> = ({
     });
 
     socket.on('ml-result', (data: MLResult) => {
-      setLatestResult(data);
-      onResult?.(data);
+      if (isActive) {
+        setLatestResult(data);
+        onResult?.(data);
+      }
     });
 
     return () => {
       socket.disconnect();
     };
-  }, [backendUrl, onResult, onConnectionChange]);
+  }, [backendUrl, onResult, onConnectionChange, isActive]);
 
   // ── 2. Load MediaPipe Face Landmarker (WASM) ─────────────
   useEffect(() => {
@@ -175,7 +194,7 @@ const FocusCamera: React.FC<FocusCameraProps> = ({
     return item ? item.score : 0;
   };
 
-  // ── 4. Main Render & Multi-Factor ML Loop (60 FPS) ──────
+  // ── 4. Main Render & Process Loop (60 FPS) ───────────────
   const processLoop = useCallback(() => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
@@ -189,6 +208,23 @@ const FocusCamera: React.FC<FocusCameraProps> = ({
         // Draw video frame smoothly
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
+        // 🛑 IF SESSION IS NOT ACTIVE -> DO NOT SCAN OR PENALIZE
+        if (!isActive) {
+          // Draw Standby Overlay on Canvas
+          ctx.fillStyle = 'rgba(15, 23, 42, 0.4)';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+          ctx.fillRect(16, 16, 260, 36);
+          ctx.font = '14px sans-serif';
+          ctx.fillStyle = '#94a3b8';
+          ctx.fillText('⏸️ AI Анализ на паузе', 30, 39);
+
+          animFrameIdRef.current = requestAnimationFrame(processLoop);
+          return;
+        }
+
+        // 🚀 IF SESSION IS ACTIVE -> RUN FULL ML SCANNING
         let isCurrentlyDistracted = false;
         let reasons: string[] = [];
         let gazeRatio = 0.5;
@@ -298,7 +334,7 @@ const FocusCamera: React.FC<FocusCameraProps> = ({
                 reasons.push('Зевота / Усталость');
               }
 
-              // ── F. Visual Landmarks & Gaze Overlay ─────────
+              // ── F. Visual Landmarks Overlay ────────────────
               const strokeColor = isCurrentlyDistracted ? '#f59e0b' : '#10b981';
               ctx.strokeStyle = strokeColor;
               ctx.lineWidth = 2;
@@ -350,16 +386,13 @@ const FocusCamera: React.FC<FocusCameraProps> = ({
           }
           elapsedDistractionSec = Math.floor((nowMs - distractionStartTimeRef.current) / 1000);
 
-          // PENALIZE & ALARM ONLY IF DISTRACTED FOR > 5 SECONDS
           if (elapsedDistractionSec >= distractionGracePeriodSec) {
             currentScore = 40;
             event = 'distraction';
           } else {
-            // Under 5 seconds -> Warning status, score stays high (no penalty yet)
             currentScore = 90;
           }
         } else {
-          // Reset timer immediately when user looks back at screen
           distractionStartTimeRef.current = null;
           currentScore = 100;
         }
@@ -431,7 +464,7 @@ const FocusCamera: React.FC<FocusCameraProps> = ({
     }
 
     animFrameIdRef.current = requestAnimationFrame(processLoop);
-  }, [backendUrl, onResult, distractionGracePeriodSec]);
+  }, [backendUrl, onResult, distractionGracePeriodSec, isActive]);
 
   // Start Loop
   useEffect(() => {
@@ -462,7 +495,7 @@ const FocusCamera: React.FC<FocusCameraProps> = ({
           </div>
         )}
 
-        {latestResult && (
+        {isActive && latestResult && (
           <div
             className={`live-score-overlay ${
               latestResult.score < 50 ? 'danger' : latestResult.score < 75 ? 'warning' : 'good'
