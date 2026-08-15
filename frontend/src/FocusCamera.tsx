@@ -17,6 +17,7 @@ export interface MLResult {
     face_detected?: boolean;
     reason?: string;
     mode?: string;
+    distraction_timer_sec?: number;
     [key: string]: any;
   };
 }
@@ -25,20 +26,20 @@ interface FocusCameraProps {
   onResult?: (result: MLResult) => void;
   onConnectionChange?: (connected: boolean) => void;
   backendUrl?: string;
+  distractionGracePeriodSec?: number; // Configurable grace period (default 5 sec)
 }
 
 /**
- * Multi-Factor FocusCamera Engine with Real-Time MediaPipe WASM:
- * 1. Eye Gaze Direction (Left, Right, Up, Down / Phone)
- * 2. Head Yaw (Turn Left / Right) & Roll (Tilt) & Pitch (Looking down)
- * 3. Drowsiness / Closed Eyes (EAR + Blendshapes)
- * 4. Yawning / Open Mouth (MAR + Blendshapes)
- * 5. Face Presence / Leaving seat
+ * FocusCamera Engine with 5-Second Grace Period & Multi-Factor Detection:
+ * - Immediate visual detection of gaze/head/eyes/mouth/presence.
+ * - 5-second grace period timer: score penalties & distraction alerts trigger ONLY
+ *   if the user stays in a distracted position continuously for > 5 seconds.
  */
 const FocusCamera: React.FC<FocusCameraProps> = ({
   onResult,
   onConnectionChange,
   backendUrl = 'http://localhost:5000',
+  distractionGracePeriodSec = 5,
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -47,6 +48,9 @@ const FocusCamera: React.FC<FocusCameraProps> = ({
   const animFrameIdRef = useRef<number | null>(null);
   const lastUploadTimeRef = useRef<number>(0);
   const isUploadingRef = useRef<boolean>(false);
+
+  // ⏱️ Grace Period Tracking Refs
+  const distractionStartTimeRef = useRef<number | null>(null);
   const closedEyeFramesRef = useRef<number>(0);
 
   const [latestResult, setLatestResult] = useState<MLResult | null>(null);
@@ -185,8 +189,7 @@ const FocusCamera: React.FC<FocusCameraProps> = ({
         // Draw video frame smoothly
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-        let currentScore = 100;
-        let event: string | null = null;
+        let isCurrentlyDistracted = false;
         let reasons: string[] = [];
         let gazeRatio = 0.5;
         let headTiltDeg = 0;
@@ -205,7 +208,6 @@ const FocusCamera: React.FC<FocusCameraProps> = ({
               faceDetected = true;
               const lm = results.faceLandmarks[0];
 
-              // Key landmarks
               const nose = lm[1];
               const leftCheek = lm[234];
               const rightCheek = lm[454];
@@ -225,19 +227,19 @@ const FocusCamera: React.FC<FocusCameraProps> = ({
 
               if (yawRatio < 0.45) {
                 headPose = 'Поворот влево';
-                currentScore -= 40;
+                isCurrentlyDistracted = true;
                 reasons.push('Поворот головы влево');
               } else if (yawRatio > 2.2) {
                 headPose = 'Поворот вправо';
-                currentScore -= 40;
+                isCurrentlyDistracted = true;
                 reasons.push('Поворот головы вправо');
               } else if (headTiltDeg > 22) {
                 headPose = `Наклон (${headTiltDeg}°)`;
-                currentScore -= 30;
+                isCurrentlyDistracted = true;
                 reasons.push('Наклон головы');
               }
 
-              // ── C. Eye Gaze Direction (Iris & Blendshapes) ──
+              // ── C. Eye Gaze Direction ─────────────────────
               const eyeLookOutLeft = getBlendshapeValue(blendshapes, 'eyeLookOutLeft');
               const eyeLookInLeft = getBlendshapeValue(blendshapes, 'eyeLookInLeft');
               const eyeLookOutRight = getBlendshapeValue(blendshapes, 'eyeLookOutRight');
@@ -250,26 +252,25 @@ const FocusCamera: React.FC<FocusCameraProps> = ({
               const horizontalDeviation = Math.abs(nose.x - 0.5);
               gazeRatio = Math.round((nose.x - ((lm[133].x + lm[362].x) / 2) + 0.5) * 100) / 100;
 
-              // Gaze classification
               if (eyeLookDownLeft > 0.4 || eyeLookDownRight > 0.4) {
                 gazeDirection = 'Вниз (телефон)';
-                currentScore -= 45;
+                isCurrentlyDistracted = true;
                 reasons.push('Взгляд вниз (телефон / экран)');
               } else if (eyeLookOutLeft > 0.35 || eyeLookInRight > 0.35) {
                 gazeDirection = 'Влево';
-                currentScore -= 40;
+                isCurrentlyDistracted = true;
                 reasons.push('Взгляд в сторону (влево)');
               } else if (eyeLookOutRight > 0.35 || eyeLookInLeft > 0.35) {
                 gazeDirection = 'Вправо';
-                currentScore -= 40;
+                isCurrentlyDistracted = true;
                 reasons.push('Взгляд в сторону (вправо)');
               } else if (eyeLookUpLeft > 0.35 || eyeLookUpRight > 0.35) {
                 gazeDirection = 'Вверх';
-                currentScore -= 35;
+                isCurrentlyDistracted = true;
                 reasons.push('Взгляд вверх');
               } else if (horizontalDeviation > 0.17) {
                 gazeDirection = 'В сторону';
-                currentScore -= 35;
+                isCurrentlyDistracted = true;
                 reasons.push('Взгляд отведён от экрана');
               }
 
@@ -283,10 +284,9 @@ const FocusCamera: React.FC<FocusCameraProps> = ({
                 closedEyeFramesRef.current = 0;
               }
 
-              // If eyes closed for > 8 frames (~150ms+)
               if (closedEyeFramesRef.current > 8) {
                 eyeState = 'Закрыты / Сонливость';
-                currentScore -= 50;
+                isCurrentlyDistracted = true;
                 reasons.push('Сонливость / Закрыты глаза');
               }
 
@@ -294,16 +294,15 @@ const FocusCamera: React.FC<FocusCameraProps> = ({
               const jawOpen = getBlendshapeValue(blendshapes, 'jawOpen');
               if (jawOpen > 0.45) {
                 mouthState = 'Зевота';
-                currentScore -= 25;
+                isCurrentlyDistracted = true;
                 reasons.push('Зевота / Усталость');
               }
 
               // ── F. Visual Landmarks & Gaze Overlay ─────────
-              const strokeColor = currentScore < 55 ? '#ef4444' : currentScore < 75 ? '#f59e0b' : '#10b981';
+              const strokeColor = isCurrentlyDistracted ? '#f59e0b' : '#10b981';
               ctx.strokeStyle = strokeColor;
               ctx.lineWidth = 2;
 
-              // Draw Eye Contour points
               ctx.fillStyle = strokeColor;
               for (let i = 0; i < lm.length; i += 6) {
                 const pt = lm[i];
@@ -312,12 +311,11 @@ const FocusCamera: React.FC<FocusCameraProps> = ({
                 ctx.fill();
               }
 
-              // Draw Gaze Vector Line from Nose
+              // Gaze Line
               ctx.beginPath();
               ctx.moveTo(nose.x * canvas.width, nose.y * canvas.height);
               let gazeDx = 0;
               let gazeDy = 0;
-
               if (gazeDirection.includes('Влево')) gazeDx = -50;
               if (gazeDirection.includes('Вправо')) gazeDx = 50;
               if (gazeDirection.includes('Вниз')) gazeDy = 50;
@@ -330,9 +328,9 @@ const FocusCamera: React.FC<FocusCameraProps> = ({
               ctx.stroke();
 
             } else {
-              // ── Face Missing ─────────────────────────────
+              // Face Missing
               faceDetected = false;
-              currentScore = 10;
+              isCurrentlyDistracted = true;
               reasons.push('Лицо не в кадре / Отсутствие');
             }
           } catch (e) {
@@ -340,12 +338,42 @@ const FocusCamera: React.FC<FocusCameraProps> = ({
           }
         }
 
-        currentScore = Math.max(0, Math.min(100, currentScore));
-        if (currentScore < 60) {
-          event = 'distraction';
+        // ⏱️ 5-SECOND CONTINUOUS DISTRACTION TIMER LOGIC
+        const nowMs = performance.now();
+        let elapsedDistractionSec = 0;
+        let currentScore = 100;
+        let event: string | null = null;
+
+        if (isCurrentlyDistracted) {
+          if (distractionStartTimeRef.current === null) {
+            distractionStartTimeRef.current = nowMs;
+          }
+          elapsedDistractionSec = Math.floor((nowMs - distractionStartTimeRef.current) / 1000);
+
+          // PENALIZE & ALARM ONLY IF DISTRACTED FOR > 5 SECONDS
+          if (elapsedDistractionSec >= distractionGracePeriodSec) {
+            currentScore = 40;
+            event = 'distraction';
+          } else {
+            // Under 5 seconds -> Warning status, score stays high (no penalty yet)
+            currentScore = 90;
+          }
+        } else {
+          // Reset timer immediately when user looks back at screen
+          distractionStartTimeRef.current = null;
+          currentScore = 100;
         }
 
-        const primaryReason = reasons.length > 0 ? reasons.join('; ') : 'Внимание удержано';
+        let primaryReason = 'Внимание удержано';
+        if (isCurrentlyDistracted) {
+          const reasonText = reasons.length > 0 ? reasons.join('; ') : 'Отвлечение';
+          if (elapsedDistractionSec < distractionGracePeriodSec) {
+            const remaining = distractionGracePeriodSec - elapsedDistractionSec;
+            primaryReason = `⚠️ ${reasonText} (Фиксация: ${elapsedDistractionSec}/${distractionGracePeriodSec} сек, штраф через ${remaining}с)`;
+          } else {
+            primaryReason = `🚨 ${reasonText} (Штраф за отвлечение > 5 сек!)`;
+          }
+        }
 
         const computedResult: MLResult = {
           score: currentScore,
@@ -359,7 +387,8 @@ const FocusCamera: React.FC<FocusCameraProps> = ({
             mouth_state: mouthState,
             face_detected: faceDetected,
             reason: primaryReason,
-            mode: 'Multi-Factor MediaPipe Engine',
+            mode: 'Multi-Factor Engine (5s Grace Period)',
+            distraction_timer_sec: elapsedDistractionSec,
           },
         };
 
@@ -402,7 +431,7 @@ const FocusCamera: React.FC<FocusCameraProps> = ({
     }
 
     animFrameIdRef.current = requestAnimationFrame(processLoop);
-  }, [backendUrl, onResult]);
+  }, [backendUrl, onResult, distractionGracePeriodSec]);
 
   // Start Loop
   useEffect(() => {
@@ -445,7 +474,7 @@ const FocusCamera: React.FC<FocusCameraProps> = ({
             </div>
             {latestResult.event && (
               <div className="event-badge">
-                ⚠️ {latestResult.details?.reason || 'ОТВЛЕЧЕНИЕ'}
+                ⚠️ {latestResult.details?.reason || 'ОТВЛЕЧЕНИЕ > 5 СЕК'}
               </div>
             )}
           </div>
