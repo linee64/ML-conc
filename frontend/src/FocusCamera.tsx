@@ -210,16 +210,6 @@ const FocusCamera: React.FC<FocusCameraProps> = ({
 
         // 🛑 IF SESSION IS NOT ACTIVE -> DO NOT SCAN OR PENALIZE
         if (!isActive) {
-          // Draw Standby Overlay on Canvas
-          ctx.fillStyle = 'rgba(15, 23, 42, 0.4)';
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-          ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-          ctx.fillRect(16, 16, 260, 36);
-          ctx.font = '14px sans-serif';
-          ctx.fillStyle = '#94a3b8';
-          ctx.fillText('⏸️ AI Анализ на паузе', 30, 39);
-
           animFrameIdRef.current = requestAnimationFrame(processLoop);
           return;
         }
@@ -492,6 +482,12 @@ const FocusCamera: React.FC<FocusCameraProps> = ({
         {!modelLoaded && cameraActive && (
           <div className="model-loading-overlay">
             <span>⚡ Загрузка нейросети MediaPipe...</span>
+          </div>
+        )}
+
+        {!isActive && cameraActive && (
+          <div className="standby-overlay">
+            <span>⏸️ AI Анализ на паузе (Нажмите «Начать сессию»)</span>
           </div>
         )}
 

@@ -162,6 +162,7 @@ body {
   height: auto;
   display: block;
   background: #000;
+  transform: scaleX(-1); /* Mirror selfie camera preview */
 }
 
 .camera-placeholder {
@@ -188,6 +189,19 @@ body {
   border-radius: 12px;
   font-size: 0.8rem;
   color: #60a5fa;
+}
+
+.standby-overlay {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--panel-border);
+  padding: 6px 14px;
+  border-radius: 12px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
 }
 
 .live-score-overlay {
