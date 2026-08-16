@@ -2,35 +2,17 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import FocusCamera, { type MLResult } from './FocusCamera';
 import { Play, Square, Activity, AlertTriangle, ShieldCheck, Clock, Eye, UserCheck } from 'lucide-react';
+import { Howl } from 'howler';
 import './App.css';
 
 const BACKEND_URL = 'http://localhost:5000';
 
-// Audio chime synthesized with Web Audio API for distractions
-const playDistractionChime = () => {
-  try {
-    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-    if (!AudioCtx) return;
-    const ctx = new AudioCtx();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(440, ctx.currentTime);
-    osc.frequency.exponentialRampToValueAtTime(220, ctx.currentTime + 0.3);
-
-    gain.gain.setValueAtTime(0.2, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
-
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-
-    osc.start();
-    osc.stop(ctx.currentTime + 0.3);
-  } catch (e) {
-    // Ignore audio autoplay restrictions if unhandled
-  }
-};
+// Audio punishment (Gazan - Sixseven)
+const punishmentAudio = new Howl({
+  src: ['/audio/sixseven.mp3'],
+  volume: 1.0,
+  html5: true // Force HTML5 audio to bypass some browser autoplay policies
+});
 
 const App: React.FC = () => {
   const [isConnected, setIsConnected] = useState<boolean>(false);
@@ -65,6 +47,11 @@ const App: React.FC = () => {
         setSessionSeconds(0);
         setDistractionCount(0);
         setEventLog([]);
+        
+        // Pre-load/unlock audio context on user interaction
+        if (Howler.ctx && Howler.ctx.state === 'suspended') {
+          Howler.ctx.resume();
+        }
       }
     } catch (e) {
       console.error('Session start error:', e);
@@ -84,7 +71,29 @@ const App: React.FC = () => {
       setCurrentScore(100);
       setLatestEvent(null);
       setDetails({ reason: 'Сессия остановлена' });
+      punishmentAudio.stop();
     }
+  };
+
+  // Trigger McDonald's penalty (immediately opens vacancy, 5 sec later plays Gazan song)
+  const triggerVibeCoderPenalty = () => {
+    // 1. Immediately open McDonald's / Vkusno i Tochka job application
+    try {
+      window.open('https://rabota.vkusnoitochka.ru/', '_blank');
+    } catch (e) {
+      console.error('Failed to open tab:', e);
+    }
+
+    // 2. Exactly 5 seconds later play Gazan song
+    setTimeout(() => {
+      try {
+        if (!punishmentAudio.playing()) {
+          punishmentAudio.play();
+        }
+      } catch (err) {
+        console.error('Audio playback error:', err);
+      }
+    }, 5000);
   };
 
   // Handle ML results from FocusCamera
@@ -100,17 +109,19 @@ const App: React.FC = () => {
 
       if (result.event === 'distraction') {
         const now = Date.now();
-        // Cooldown 3s between audio alerts
-        if (now - lastEventTimeRef.current > 3000) {
+        // Cooldown 15s between extreme penalties to prevent tab bomb
+        if (now - lastEventTimeRef.current > 15000) {
           lastEventTimeRef.current = now;
-          playDistractionChime();
+          
+          triggerVibeCoderPenalty();
+          
           setDistractionCount((prev) => prev + 1);
           setLatestEvent('distraction');
 
           const newLogItem = {
             id: now,
             time: new Date().toLocaleTimeString(),
-            type: result.details?.reason || 'Отвлечение внимания',
+            type: result.details?.reason || 'Отвлечение внимания (Штраф Макдональдс)',
             score: result.score,
           };
           setEventLog((prev) => [newLogItem, ...prev.slice(0, 9)]);
@@ -134,10 +145,10 @@ const App: React.FC = () => {
       {/* Header Bar */}
       <header className="app-header">
         <div className="title-box">
-          <div className="logo-icon">🧠</div>
+          <div className="logo-icon">🍔</div>
           <div>
-            <h1>Personal AI Focus Coach</h1>
-            <p className="subtitle">Анализ концентрации и позы в реальном времени</p>
+            <h1>Vibecoder Focus AI</h1>
+            <p className="subtitle">Отвлекся? Добро пожаловать во «Вкусно — и точка»!</p>
           </div>
         </div>
 
@@ -164,7 +175,7 @@ const App: React.FC = () => {
                 <AlertTriangle className="alert-icon" />
                 <div>
                   <strong>Обнаружено отвлечение!</strong>
-                  <span>Пожалуйста, верните внимание к работе.</span>
+                  <span>Песня запущена, анкета на работу открыта. Удачи!</span>
                 </div>
               </div>
             )}
@@ -174,11 +185,11 @@ const App: React.FC = () => {
           <div className="controls-card">
             {!isSessionActive ? (
               <button className="btn btn-primary" onClick={handleStartSession}>
-                <Play className="btn-icon" /> Начать сессию фокусировки
+                <Play className="btn-icon" /> Начать хардкор сессию
               </button>
             ) : (
               <button className="btn btn-danger" onClick={handleStopSession}>
-                <Square className="btn-icon" /> Завершить сессию
+                <Square className="btn-icon" /> Сдаться (Завершить)
               </button>
             )}
 
@@ -228,7 +239,7 @@ const App: React.FC = () => {
 
             <div className="metric-box">
               <div className="metric-title">
-                <AlertTriangle className="m-icon text-red" /> Отвлечений
+                <AlertTriangle className="m-icon text-red" /> Штрафов
               </div>
               <div className="metric-value">{distractionCount}</div>
             </div>
@@ -238,7 +249,7 @@ const App: React.FC = () => {
           <div className="card telemetry-card">
             <div className="card-header">
               <Eye className="card-icon" />
-              <h3>ML Метрики</h3>
+              <h3>ML Метрики (Контроль)</h3>
             </div>
             <div className="telemetry-list">
               <div className="telemetry-item">
@@ -260,20 +271,10 @@ const App: React.FC = () => {
                 </strong>
               </div>
               <div className="telemetry-item">
-                <span>Состояние рта:</span>
-                <strong className={details.mouth_state && details.mouth_state.includes('Зевота') ? 'text-red' : 'text-green'}>
-                  {details.mouth_state || 'Норма'}
-                </strong>
-              </div>
-              <div className="telemetry-item">
                 <span>Причина / Статус:</span>
                 <strong className={currentScore < 60 ? 'text-red' : 'text-green'}>
                   {details.reason || 'Внимание удержано'}
                 </strong>
-              </div>
-              <div className="telemetry-item">
-                <span>Движок:</span>
-                <span className="mode-badge">{details.mode || 'Multi-Factor MediaPipe Engine'}</span>
               </div>
             </div>
           </div>
@@ -282,10 +283,10 @@ const App: React.FC = () => {
           <div className="card history-card">
             <div className="card-header">
               <UserCheck className="card-icon" />
-              <h3>История отвлечений</h3>
+              <h3>История провалов</h3>
             </div>
             {eventLog.length === 0 ? (
-              <p className="empty-log">Отвлечений пока не зафиксировано 👍</p>
+              <p className="empty-log">Пока держишься 👍</p>
             ) : (
               <ul className="log-list">
                 {eventLog.map((log) => (
@@ -305,3 +306,4 @@ const App: React.FC = () => {
 };
 
 export default App;
+
